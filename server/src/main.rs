@@ -3,24 +3,32 @@ use std::{
     net::SocketAddr,
     panic,
     path::{Path as StdPath, PathBuf},
+    str::FromStr,
     sync::Arc,
 };
 
 use anyhow::{Context, Result};
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{get, post},
     Json, Router,
 };
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{sqlite::SqlitePoolOptions, FromRow, SqlitePool};
-use tokio::{fs, io::AsyncWriteExt};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    FromRow, SqlitePool,
+};
+use tokio::{
+    fs,
+    io::AsyncWriteExt,
+    time::{self, Duration},
+};
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -73,6 +81,17 @@ struct SessionRow {
 #[derive(Deserialize)]
 struct FinalizeReq {
     extension: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SessionStatusResp {
+    session_id: String,
+    status: String,
+    chunk_count: i64,
+    next_chunk_idx: u32,
+    has_output: bool,
+    created_at: String,
+    completed_at: Option<String>,
 }
 
 #[tokio::main]
@@ -148,9 +167,12 @@ async fn run() -> Result<()> {
     }
 
     let db_url = sqlite_url_from_path(&db_path);
+    let db_connect_options = SqliteConnectOptions::from_str(&db_url)
+        .with_context(|| format!("parsing sqlite url {db_url}"))?
+        .create_if_missing(true);
     let db = SqlitePoolOptions::new()
         .max_connections(5)
-        .connect(&db_url)
+        .connect_with(db_connect_options)
         .await
         .with_context(|| format!("connecting sqlite {db_url}"))?;
 
@@ -163,6 +185,18 @@ async fn run() -> Result<()> {
         web_dir,
     });
 
+    cleanup_expired_sessions(state.clone()).await?;
+
+    let cleanup_state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Err(err) = cleanup_expired_sessions(cleanup_state.clone()).await {
+                warn!(error = %err, "cleanup task failed");
+            }
+            time::sleep(Duration::from_secs(60 * 60)).await;
+        }
+    });
+
     let app = Router::new()
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/sessions", post(create_session))
@@ -173,14 +207,16 @@ async fn run() -> Result<()> {
         .route("/api/sessions/{id}/chunks", post(upload_chunk))
         .route("/api/sessions/{id}/finalize", post(finalize_session))
         .route("/api/sessions/{id}/file", get(download_file_legacy))
+        .route(
+            "/api/r/{token}",
+            get(get_status_by_token).delete(delete_by_token),
+        )
         .route("/api/r/{token}/chunks", post(upload_chunk_by_token))
         .route("/api/r/{token}/finalize", post(finalize_by_token))
-        .route("/api/r/{token}", delete(delete_by_token))
         .route("/r/{token}/file", get(download_file_by_token))
         .route("/r/{token}", get(secret_recorder_page))
         .route("/r/{token}/", get(secret_recorder_page))
-        .nest_service(
-            "/",
+        .fallback_service(
             ServeDir::new(state.web_dir.clone()).append_index_html_on_directories(true),
         )
         .layer(CorsLayer::permissive())
@@ -489,10 +525,14 @@ async fn build_audio_response(
     output_path: String,
 ) -> Result<Response, (StatusCode, String)> {
     let data = fs::read(output_path).await.map_err(internal_err)?;
+    let content_len = data.len();
 
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "audio/webm")
+        .header("accept-ranges", "bytes")
+        .header("content-length", content_len.to_string())
+        .header("x-content-type-options", "nosniff")
         .header(
             "content-disposition",
             format!("inline; filename=\"{session_id}.webm\""),
@@ -520,9 +560,17 @@ async fn delete_session_files_and_metadata(
     session_id: String,
     state: Arc<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    delete_session_files_and_metadata_impl(&session_id, state).await?;
+    Ok((StatusCode::OK, "deleted"))
+}
+
+async fn delete_session_files_and_metadata_impl(
+    session_id: &str,
+    state: Arc<AppState>,
+) -> Result<(), (StatusCode, String)> {
     let row: Option<(Option<String>,)> =
         sqlx::query_as("SELECT output_path FROM sessions WHERE id = ?")
-            .bind(&session_id)
+            .bind(session_id)
             .fetch_optional(&state.db)
             .await
             .map_err(internal_err)?;
@@ -535,7 +583,7 @@ async fn delete_session_files_and_metadata(
 
     let chunk_rows: Vec<(String,)> =
         sqlx::query_as("SELECT file_path FROM chunks WHERE session_id = ?")
-            .bind(&session_id)
+            .bind(session_id)
             .fetch_all(&state.db)
             .await
             .map_err(internal_err)?;
@@ -544,7 +592,7 @@ async fn delete_session_files_and_metadata(
         let _ = fs::remove_file(chunk_path).await;
     }
 
-    let chunk_dir = state.data_dir.join("chunks").join(&session_id);
+    let chunk_dir = state.data_dir.join("chunks").join(session_id);
     let _ = fs::remove_dir_all(chunk_dir).await;
 
     if let Some(path) = output_path {
@@ -552,27 +600,130 @@ async fn delete_session_files_and_metadata(
     }
 
     sqlx::query("DELETE FROM chunks WHERE session_id = ?")
-        .bind(&session_id)
+        .bind(session_id)
         .execute(&state.db)
         .await
         .map_err(internal_err)?;
 
     sqlx::query("DELETE FROM sessions WHERE id = ?")
-        .bind(&session_id)
+        .bind(session_id)
         .execute(&state.db)
         .await
         .map_err(internal_err)?;
 
-    Ok((StatusCode::OK, "deleted"))
+    Ok(())
+}
+
+async fn get_status_by_token(
+    Path(token): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<SessionStatusResp>, (StatusCode, String)> {
+    let row: Option<(String, String, String, Option<String>, Option<String>)> =
+        sqlx::query_as(
+            "SELECT id, status, created_at, completed_at, output_path FROM sessions WHERE secret_token = ?",
+        )
+        .bind(&token)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal_err)?;
+
+    let (session_id, status, created_at, completed_at, output_path) =
+        row.ok_or((StatusCode::NOT_FOUND, "session not found".to_string()))?;
+
+    let chunk_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chunks WHERE session_id = ?")
+        .bind(&session_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal_err)?;
+
+    let max_idx: Option<i64> =
+        sqlx::query_scalar("SELECT MAX(idx) FROM chunks WHERE session_id = ?")
+            .bind(&session_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(internal_err)?;
+
+    let next_chunk_idx = max_idx.and_then(|v| u32::try_from(v + 1).ok()).unwrap_or(0);
+
+    Ok(Json(SessionStatusResp {
+        session_id,
+        status,
+        chunk_count,
+        next_chunk_idx,
+        has_output: output_path.is_some(),
+        created_at,
+        completed_at,
+    }))
+}
+
+async fn cleanup_expired_sessions(state: Arc<AppState>) -> Result<()> {
+    let finalized_ids: Vec<(String,)> = sqlx::query_as(
+        "SELECT id FROM sessions WHERE status = 'finalized' AND datetime(COALESCE(completed_at, created_at)) < datetime('now', '-7 day')",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    for (session_id,) in finalized_ids {
+        if let Err((_, msg)) =
+            delete_session_files_and_metadata_impl(&session_id, state.clone()).await
+        {
+            warn!(session_id = %session_id, error = %msg, "failed deleting expired finalized session");
+        } else {
+            info!(session_id = %session_id, "deleted expired finalized session");
+        }
+    }
+
+    let stale_recording_ids: Vec<(String,)> = sqlx::query_as(
+        "SELECT id FROM sessions WHERE status != 'finalized' AND datetime(created_at) < datetime('now', '-1 day')",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    for (session_id,) in stale_recording_ids {
+        if let Err((_, msg)) =
+            delete_session_files_and_metadata_impl(&session_id, state.clone()).await
+        {
+            warn!(session_id = %session_id, error = %msg, "failed deleting stale unfinalized session");
+        } else {
+            info!(session_id = %session_id, "deleted stale unfinalized session");
+        }
+    }
+
+    Ok(())
 }
 
 async fn secret_recorder_page(
-    Path(_token): Path<String>,
+    Path(token): Path<String>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<Html<String>, (StatusCode, String)> {
-    let page = fs::read_to_string(state.web_dir.join("index.html"))
+    let mut page = fs::read_to_string(state.web_dir.join("index.html"))
         .await
         .map_err(internal_err)?;
+
+    let host = headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get("host"))
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost:3000");
+    let proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("http");
+
+    let secret_url = format!("{proto}://{host}/r/{token}/");
+    let preview_meta = format!(
+        r#"
+    <meta property="og:type" content="music.song">
+    <meta property="og:title" content="Voice recording">
+    <meta property="og:description" content="Private voice recording">
+    <meta property="og:url" content="{secret_url}">
+    <meta name="twitter:card" content="summary">
+"#
+    );
+
+    page = page.replacen("</head>", &format!("{preview_meta}</head>"), 1);
+
     Ok(Html(page))
 }
 
