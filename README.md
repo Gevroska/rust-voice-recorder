@@ -85,6 +85,12 @@ RUST_LOG=info
 RUST_BACKTRACE=1
 ```
 
+Path handling notes:
+
+- `APP_DATA_DIR`, `APP_DB_PATH`, and `APP_WEB_DIR` can be relative or absolute.
+- Relative paths are normalized to absolute paths at startup.
+- The server automatically creates the parent directory of `APP_DB_PATH` before opening SQLite.
+
 ## API overview
 
 - `POST /api/sessions` -> create recording session and return secret URL details

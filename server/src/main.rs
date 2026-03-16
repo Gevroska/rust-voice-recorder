@@ -1,4 +1,10 @@
-use std::{env, net::SocketAddr, panic, path::PathBuf, sync::Arc};
+use std::{
+    env,
+    net::SocketAddr,
+    panic,
+    path::{Path as StdPath, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -98,18 +104,34 @@ fn init_logging() {
     }));
 }
 
+fn normalize_path(input: &str) -> Result<PathBuf> {
+    let p = PathBuf::from(input);
+    if p.is_absolute() {
+        return Ok(p);
+    }
+
+    let cwd = env::current_dir().context("resolving current working directory")?;
+    Ok(cwd.join(p))
+}
+
+fn sqlite_url_from_path(path: &StdPath) -> String {
+    format!("sqlite://{}", path.to_string_lossy())
+}
+
 async fn run() -> Result<()> {
-    let data_dir = PathBuf::from(env::var("APP_DATA_DIR").unwrap_or_else(|_| "./data".to_string()));
-    let db_path = env::var("APP_DB_PATH").unwrap_or_else(|_| "./data/app.db".to_string());
+    let data_dir =
+        normalize_path(&env::var("APP_DATA_DIR").unwrap_or_else(|_| "./data".to_string()))?;
+    let db_path =
+        normalize_path(&env::var("APP_DB_PATH").unwrap_or_else(|_| "./data/app.db".to_string()))?;
     let max_chunk_bytes = env::var("APP_MAX_CHUNK_BYTES")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(10 * 1024 * 1024);
-    let web_dir = PathBuf::from(env::var("APP_WEB_DIR").unwrap_or_else(|_| "./web".to_string()));
+    let web_dir = normalize_path(&env::var("APP_WEB_DIR").unwrap_or_else(|_| "./web".to_string()))?;
 
     info!(
         data_dir = %data_dir.display(),
-        db_path = %db_path,
+        db_path = %db_path.display(),
         max_chunk_bytes,
         web_dir = %web_dir.display(),
         "starting recorder-server"
@@ -119,7 +141,13 @@ async fn run() -> Result<()> {
         .await
         .with_context(|| format!("creating data dir {:?}", data_dir))?;
 
-    let db_url = format!("sqlite://{db_path}");
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("creating db parent dir {:?}", parent))?;
+    }
+
+    let db_url = sqlite_url_from_path(&db_path);
     let db = SqlitePoolOptions::new()
         .max_connections(5)
         .connect(&db_url)
