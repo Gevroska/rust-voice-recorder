@@ -121,37 +121,6 @@
 
     audio { width: 100%; margin-top: .6rem; }
 
-    details {
-      margin-top: 1rem;
-      background: #0f1630;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      overflow: hidden;
-    }
-
-    summary {
-      cursor: pointer;
-      padding: .65rem .8rem;
-      font-weight: 600;
-      user-select: none;
-      list-style: none;
-    }
-
-    summary::-webkit-details-marker { display: none; }
-    .arrow { display: inline-block; transition: transform .15s ease; margin-right: .35rem; }
-    details[open] .arrow { transform: rotate(90deg); }
-
-    pre {
-      margin: 0;
-      max-height: 220px;
-      overflow: auto;
-      border-top: 1px solid var(--border);
-      padding: .8rem;
-      background: #0a0f22;
-      color: #dbe7ff;
-      font-size: .85rem;
-    }
-
     .status-ok { color: var(--ok); }
   </style>
 </head>
@@ -195,14 +164,9 @@
       <audio id="player" controls hidden></audio>
     </section>
 
-    <details>
-      <summary><span class="arrow">▶</span> Debug console</summary>
-      <pre id="log"></pre>
-    </details>
   </main>
 
 <script>
-const logEl = document.getElementById('log');
 const recordBtn = document.getElementById('recordBtn');
 const sendBtn = document.getElementById('sendBtn');
 const copyLinkBtn = document.getElementById('copyLinkBtn');
@@ -229,10 +193,10 @@ let isFinalized = false;
 let hasCopiedLink = false;
 let isRestoringSession = false;
 let isFinalizing = false;
+let isRestoredFromSecretPath = false;
 const pendingChunkTasks = new Set();
 
-function log(msg){ logEl.textContent += `[${new Date().toISOString()}] ${msg}
-`; logEl.scrollTop = logEl.scrollHeight; }
+function log(_msg){ }
 function currentTokenFromPath(){ const m = window.location.pathname.match(/^\/r\/([^/]+)\/?$/); return m ? m[1] : null; }
 function makeAbsolute(path){ return `${window.location.origin}${path}`; }
 function hasActiveSession(){ return !!uploadBase && !isFinalized; }
@@ -254,8 +218,12 @@ function updateControls(){
     recordBtn.textContent = 'Pause Recording';
     recordBtn.className = 'primary big-btn';
     sendBtn.disabled = isFinalizing;
-  } else if (isPaused || (hasActiveSession() && !mediaRecorder)) {
+  } else if (isPaused) {
     recordBtn.textContent = 'Resume Recording';
+    recordBtn.className = 'primary big-btn';
+    sendBtn.disabled = isFinalizing;
+  } else if (hasActiveSession() && !mediaRecorder) {
+    recordBtn.textContent = isRestoredFromSecretPath ? 'Start a New Recording' : 'Resume Recording';
     recordBtn.className = 'primary big-btn';
     sendBtn.disabled = isFinalizing;
   } else if (!hasActiveSession()) {
@@ -380,24 +348,34 @@ async function ensureRecorderForActiveSession(){
   updateControls();
 }
 
+async function initializeNewSession(){
+  const preferredMimeType = 'audio/webm;codecs=opus';
+  const session = await createSession(preferredMimeType);
+  sessionId = session.session_id;
+  uploadBase = session.upload_base;
+  filePath = session.file_path;
+  deletePath = session.delete_path;
+  chunkIdx = 0;
+  isFinalized = false;
+  hasCopiedLink = false;
+  isRestoredFromSecretPath = false;
+  secretLinkInput.value = makeAbsolute(session.secret_path);
+  updatePlayerVisibility(false);
+  window.history.replaceState({}, '', session.secret_path);
+  log(`private URL: ${secretLinkInput.value}`);
+}
+
 async function startOrToggleRecording(){
   if (isRestoringSession || isFinalizing) return;
   db = db || await openDb();
   await resumePending();
 
   if (!uploadBase) {
-    const preferredMimeType = 'audio/webm;codecs=opus';
-    const session = await createSession(preferredMimeType);
-    sessionId = session.session_id;
-    uploadBase = session.upload_base;
-    filePath = session.file_path;
-    deletePath = session.delete_path;
-    chunkIdx = 0;
-    isFinalized = false;
-    hasCopiedLink = false;
-    secretLinkInput.value = makeAbsolute(session.secret_path);
-    window.history.replaceState({}, '', session.secret_path);
-    log(`private URL: ${secretLinkInput.value}`);
+    await initializeNewSession();
+  } else if (isFinalized) {
+    await initializeNewSession();
+  } else if (isRestoredFromSecretPath && !isRecording && !isPaused && !mediaRecorder) {
+    await initializeNewSession();
   } else if (!sessionId && currentTokenFromPath()) {
     await refreshSessionFromToken(currentTokenFromPath());
   } else if (sessionId && !hasCopiedLink && !isRecording && !isPaused) {
@@ -489,6 +467,7 @@ window.addEventListener('beforeunload', (event) => { if (!shouldWarnBeforeUnload
 (async function initFromSecretPath(){
   const token = currentTokenFromPath();
   if (!token) { updateBanner('Ready to record'); updateControls(); return; }
+  isRestoredFromSecretPath = true;
   isRestoringSession = true;
   updateControls();
   uploadBase = `/api/r/${token}`;
