@@ -47,9 +47,15 @@ Only users with the secret URL can access that recording path.
 docker compose up -d --build
 ```
 
-Then open:
+### Ports (internal vs host)
 
-- `http://localhost:8080`
+- **Internal app port (inside container):** `3000`
+- **Example host binding (from `docker-compose.yml`):** `127.0.0.1:8080:3000`
+
+That means:
+
+- the app listens on `3000` in the container,
+- and is reachable on `http://127.0.0.1:8080` from the host.
 
 Click **Start** to create a recording session and auto-generate its private URL.
 
@@ -61,9 +67,10 @@ Per your deployment preference, `docker-compose.yml` only runs the recorder serv
 
 If you want HTTPS/public exposure, run Caddy (or another reverse proxy) in a **separate Docker project** and proxy requests to this service.
 
-Example high-level Caddy route (separate stack):
+Example for localhost-only publishing + Caddy in another container/project:
 
-- `https://voice.example.com` -> `http://recorder-server:3000`
+- Compose port mapping: `127.0.0.1:8080:3000` (host:container)
+- Caddy upstream: `http://host.docker.internal:8080` (or your host IP)
 
 ## API overview
 
