@@ -714,7 +714,7 @@ async fn secret_recorder_page(
     let secret_url = format!("{proto}://{host}/r/{token}/");
     let preview_meta = format!(
         r#"
-    <meta property="og:type" content="music.song">
+    <meta property="og:type" content="website">
     <meta property="og:title" content="Voice recording">
     <meta property="og:description" content="Private voice recording">
     <meta property="og:url" content="{secret_url}">
