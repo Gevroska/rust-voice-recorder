@@ -121,37 +121,6 @@
 
     audio { width: 100%; margin-top: .6rem; }
 
-    details {
-      margin-top: 1rem;
-      background: #0f1630;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      overflow: hidden;
-    }
-
-    summary {
-      cursor: pointer;
-      padding: .65rem .8rem;
-      font-weight: 600;
-      user-select: none;
-      list-style: none;
-    }
-
-    summary::-webkit-details-marker { display: none; }
-    .arrow { display: inline-block; transition: transform .15s ease; margin-right: .35rem; }
-    details[open] .arrow { transform: rotate(90deg); }
-
-    pre {
-      margin: 0;
-      max-height: 220px;
-      overflow: auto;
-      border-top: 1px solid var(--border);
-      padding: .8rem;
-      background: #0a0f22;
-      color: #dbe7ff;
-      font-size: .85rem;
-    }
-
     .status-ok { color: var(--ok); }
   </style>
 </head>
@@ -195,10 +164,6 @@
       <audio id="player" controls hidden></audio>
     </section>
 
-    <details>
-      <summary><span class="arrow">▶</span> Debug console</summary>
-      <pre id="log"></pre>
-    </details>
   </main>
 
 <script>
@@ -231,8 +196,11 @@ let isRestoringSession = false;
 let isFinalizing = false;
 const pendingChunkTasks = new Set();
 
-function log(msg){ logEl.textContent += `[${new Date().toISOString()}] ${msg}
-`; logEl.scrollTop = logEl.scrollHeight; }
+function log(msg){
+  if (!logEl) return;
+  logEl.textContent += `[${new Date().toISOString()}] ${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
 function currentTokenFromPath(){ const m = window.location.pathname.match(/^\/r\/([^/]+)\/?$/); return m ? m[1] : null; }
 function makeAbsolute(path){ return `${window.location.origin}${path}`; }
 function hasActiveSession(){ return !!uploadBase && !isFinalized; }
@@ -259,7 +227,7 @@ function updateControls(){
     recordBtn.className = 'primary big-btn';
     sendBtn.disabled = isFinalizing;
   } else if (!hasActiveSession()) {
-    recordBtn.textContent = 'Start Recording';
+    recordBtn.textContent = secretLinkInput.value ? 'Start a New Recording' : 'Start Recording';
     recordBtn.className = 'primary big-btn';
     sendBtn.disabled = true;
   } else {
@@ -444,6 +412,8 @@ async function stopAndSend(){
     log(await res.text());
     mediaRecorder = undefined;
     stream = undefined;
+    sessionId = undefined;
+    uploadBase = undefined;
   } catch (e) {
     updateBanner('Could not send now (saved for retry)', 'status-offline');
     log(e.message || String(e));
