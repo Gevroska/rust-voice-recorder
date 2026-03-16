@@ -525,10 +525,14 @@ async fn build_audio_response(
     output_path: String,
 ) -> Result<Response, (StatusCode, String)> {
     let data = fs::read(output_path).await.map_err(internal_err)?;
+    let content_len = data.len();
 
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "audio/webm")
+        .header("accept-ranges", "bytes")
+        .header("content-length", content_len.to_string())
+        .header("x-content-type-options", "nosniff")
         .header(
             "content-disposition",
             format!("inline; filename=\"{session_id}.webm\""),
