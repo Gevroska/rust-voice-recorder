@@ -121,37 +121,6 @@
 
     audio { width: 100%; margin-top: .6rem; }
 
-    details {
-      margin-top: 1rem;
-      background: #0f1630;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      overflow: hidden;
-    }
-
-    summary {
-      cursor: pointer;
-      padding: .65rem .8rem;
-      font-weight: 600;
-      user-select: none;
-      list-style: none;
-    }
-
-    summary::-webkit-details-marker { display: none; }
-    .arrow { display: inline-block; transition: transform .15s ease; margin-right: .35rem; }
-    details[open] .arrow { transform: rotate(90deg); }
-
-    pre {
-      margin: 0;
-      max-height: 220px;
-      overflow: auto;
-      border-top: 1px solid var(--border);
-      padding: .8rem;
-      background: #0a0f22;
-      color: #dbe7ff;
-      font-size: .85rem;
-    }
-
     .status-ok { color: var(--ok); }
   </style>
 </head>
@@ -195,10 +164,6 @@
       <audio id="player" controls hidden></audio>
     </section>
 
-    <details>
-      <summary><span class="arrow">▶</span> Debug console</summary>
-      <pre id="log"></pre>
-    </details>
   </main>
 
 <script>
@@ -227,9 +192,15 @@ let isRecording = false;
 let isPaused = false;
 let isFinalized = false;
 let hasCopiedLink = false;
+let isRestoringSession = false;
+let isFinalizing = false;
+const pendingChunkTasks = new Set();
 
-function log(msg){ logEl.textContent += `[${new Date().toISOString()}] ${msg}
-`; logEl.scrollTop = logEl.scrollHeight; }
+function log(msg){
+  if (!logEl) return;
+  logEl.textContent += `[${new Date().toISOString()}] ${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
 function currentTokenFromPath(){ const m = window.location.pathname.match(/^\/r\/([^/]+)\/?$/); return m ? m[1] : null; }
 function makeAbsolute(path){ return `${window.location.origin}${path}`; }
 function hasActiveSession(){ return !!uploadBase && !isFinalized; }
@@ -250,29 +221,37 @@ function updateControls(){
   if (isRecording) {
     recordBtn.textContent = 'Pause Recording';
     recordBtn.className = 'primary big-btn';
-    sendBtn.disabled = false;
+    sendBtn.disabled = isFinalizing;
   } else if (isPaused || (hasActiveSession() && !mediaRecorder)) {
     recordBtn.textContent = 'Resume Recording';
     recordBtn.className = 'primary big-btn';
-    sendBtn.disabled = false;
+    sendBtn.disabled = isFinalizing;
   } else if (!hasActiveSession()) {
-    recordBtn.textContent = 'Start Recording';
+    recordBtn.textContent = secretLinkInput.value ? 'Start a New Recording' : 'Start Recording';
     recordBtn.className = 'primary big-btn';
     sendBtn.disabled = true;
   } else {
     recordBtn.textContent = 'Resume Recording';
     recordBtn.className = 'primary big-btn';
-    sendBtn.disabled = false;
+    sendBtn.disabled = isFinalizing;
   }
 
-  if ((sessionId && !hasCopiedLink) && !isRecording) {
-    recordBtn.disabled = false;
-  } else {
-    recordBtn.disabled = false;
-  }
+  recordBtn.disabled = isRestoringSession || isFinalizing;
+  sendBtn.disabled = sendBtn.disabled || isRestoringSession;
 
   copyLinkBtn.disabled = !secretLinkInput.value;
   deleteBtn.disabled = !deletePath;
+}
+
+function trackChunkTask(task){
+  pendingChunkTasks.add(task);
+  task.finally(() => pendingChunkTasks.delete(task));
+  return task;
+}
+
+async function waitForPendingChunkTasks(){
+  if (pendingChunkTasks.size === 0) return;
+  await Promise.allSettled(Array.from(pendingChunkTasks));
 }
 
 function openDb(){
@@ -316,21 +295,45 @@ async function resumePending(){
 }
 
 function bindRecorderEvents(){
-  mediaRecorder.ondataavailable = async (ev) => {
-    if (!ev.data || ev.data.size === 0) return;
-    const currentIdx = chunkIdx;
-    const buf = await ev.data.arrayBuffer();
-    const item = { key: `${sessionId}:${currentIdx}`, sessionId, idx: currentIdx, dataB64: toBase64(buf), uploadBase, createdAt: Date.now() };
-    await queueChunk(item);
-    chunkIdx++;
-    try {
-      await uploadChunk(item);
-      if (navigator.onLine) updateBanner(isRecording ? 'Recording in progress (upload OK)' : 'Recording paused', isRecording ? 'status-recording' : 'status-paused');
-    } catch (e) {
-      updateBanner('Connection unstable: uploads queued', 'status-offline');
-      log(`queued chunk ${currentIdx} (upload error: ${e.message})`);
-    }
+  mediaRecorder.ondataavailable = (ev) => {
+    trackChunkTask((async () => {
+      if (!ev.data || ev.data.size === 0) return;
+      const currentIdx = chunkIdx;
+      const buf = await ev.data.arrayBuffer();
+      const item = { key: `${sessionId}:${currentIdx}`, sessionId, idx: currentIdx, dataB64: toBase64(buf), uploadBase, createdAt: Date.now() };
+      await queueChunk(item);
+      chunkIdx++;
+      try {
+        await uploadChunk(item);
+        if (navigator.onLine) updateBanner(isRecording ? 'Recording in progress (upload OK)' : 'Recording paused', isRecording ? 'status-recording' : 'status-paused');
+      } catch (e) {
+        updateBanner('Connection unstable: uploads queued', 'status-offline');
+        log(`queued chunk ${currentIdx} (upload error: ${e.message})`);
+      }
+    })());
   };
+}
+
+async function stopRecorderAndFlush(){
+  if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+    await waitForPendingChunkTasks();
+    return;
+  }
+
+  await new Promise((resolve) => {
+    mediaRecorder.addEventListener('stop', resolve, { once: true });
+    mediaRecorder.stop();
+  });
+
+  await waitForPendingChunkTasks();
+}
+
+async function refreshSessionFromToken(token){
+  const status = await loadSessionStatusByToken(token);
+  sessionId = status.session_id;
+  chunkIdx = status.next_chunk_idx;
+  isFinalized = status.status === 'finalized';
+  return status;
 }
 
 async function ensureRecorderForActiveSession(){
@@ -346,6 +349,7 @@ async function ensureRecorderForActiveSession(){
 }
 
 async function startOrToggleRecording(){
+  if (isRestoringSession || isFinalizing) return;
   db = db || await openDb();
   await resumePending();
 
@@ -362,6 +366,8 @@ async function startOrToggleRecording(){
     secretLinkInput.value = makeAbsolute(session.secret_path);
     window.history.replaceState({}, '', session.secret_path);
     log(`private URL: ${secretLinkInput.value}`);
+  } else if (!sessionId && currentTokenFromPath()) {
+    await refreshSessionFromToken(currentTokenFromPath());
   } else if (sessionId && !hasCopiedLink && !isRecording && !isPaused) {
     const proceed = window.confirm('Please copy and save the private link before continuing. Continue anyway?');
     if (!proceed) return;
@@ -389,9 +395,11 @@ async function startOrToggleRecording(){
 }
 
 async function stopAndSend(){
-  if (!uploadBase) return;
+  if (!uploadBase || isFinalizing) return;
+  isFinalizing = true;
+  updateControls();
   try {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    await stopRecorderAndFlush();
     if (stream) stream.getTracks().forEach((t) => t.stop());
     isRecording = false;
     isPaused = false;
@@ -404,9 +412,13 @@ async function stopAndSend(){
     log(await res.text());
     mediaRecorder = undefined;
     stream = undefined;
+    sessionId = undefined;
+    uploadBase = undefined;
   } catch (e) {
     updateBanner('Could not send now (saved for retry)', 'status-offline');
     log(e.message || String(e));
+  } finally {
+    isFinalizing = false;
   }
   updateControls();
 }
@@ -447,15 +459,15 @@ window.addEventListener('beforeunload', (event) => { if (!shouldWarnBeforeUnload
 (async function initFromSecretPath(){
   const token = currentTokenFromPath();
   if (!token) { updateBanner('Ready to record'); updateControls(); return; }
+  isRestoringSession = true;
+  updateControls();
   uploadBase = `/api/r/${token}`;
   filePath = `/r/${token}/file`;
   deletePath = `/api/r/${token}`;
   secretLinkInput.value = makeAbsolute(`/r/${token}/`);
+  hasCopiedLink = true;
   try {
-    const status = await loadSessionStatusByToken(token);
-    sessionId = status.session_id;
-    chunkIdx = status.next_chunk_idx;
-    isFinalized = status.status === 'finalized';
+    const status = await refreshSessionFromToken(token);
     if (isFinalized && status.has_output) {
       updateBanner('Sent ✅', 'status-sent');
       player.src = filePath;
@@ -468,6 +480,8 @@ window.addEventListener('beforeunload', (event) => { if (!shouldWarnBeforeUnload
   } catch (e) {
     log(`failed to load secret status: ${e.message}`);
     updateBanner('Ready to record');
+  } finally {
+    isRestoringSession = false;
   }
   updateControls();
 })();
