@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Resilient Voice Recorder</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0b1020;
+      --panel: #141b34;
+      --muted: #9fb0d8;
+      --text: #f0f4ff;
+      --accent: #6ea8fe;
+      --danger: #f87171;
+      --ok: #22c55e;
+      --border: #27335f;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: radial-gradient(1200px 600px at 20% -10%, #1a2550 0%, var(--bg) 50%);
+      color: var(--text);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 2rem 1rem;
+    }
+
+    .card {
+      width: min(920px, 100%);
+      background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: 0 30px 60px rgba(0,0,0,.35);
+      padding: 1.25rem;
+    }
+
+    h1 { margin: .25rem 0 .5rem; font-size: 1.6rem; }
+    p { color: var(--muted); margin-top: 0; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: .75rem;
+      margin: 1rem 0;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: .75rem;
+    }
+
+    .controls { display: flex; flex-wrap: wrap; gap: .5rem; }
+
+    button {
+      border: 1px solid transparent;
+      background: #1e2a50;
+      color: var(--text);
+      border-radius: 10px;
+      padding: .62rem .9rem;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    button:hover { border-color: var(--accent); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+
+    .primary { background: #27417b; }
+    .danger { background: #5f2432; border-color: #8a3348; }
+
+    .label { font-size: .82rem; color: var(--muted); display: block; margin-bottom: .35rem; }
+
+    select, input {
+      width: 100%;
+      background: #0f1630;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      padding: .55rem .65rem;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: .6rem;
+      margin-top: .7rem;
+    }
+
+    .stat {
+      background: #0f1630;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: .55rem .65rem;
+    }
+
+    .muted { color: var(--muted); font-size: .86rem; }
+
+    audio { width: 100%; margin-top: .6rem; }
+
+    details {
+      margin-top: 1rem;
+      background: #0f1630;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    summary {
+      cursor: pointer;
+      padding: .65rem .8rem;
+      font-weight: 600;
+      user-select: none;
+      list-style: none;
+    }
+
+    summary::-webkit-details-marker { display: none; }
+    .arrow { display: inline-block; transition: transform .15s ease; margin-right: .35rem; }
+    details[open] .arrow { transform: rotate(90deg); }
+
+    pre {
+      margin: 0;
+      max-height: 220px;
+      overflow: auto;
+      border-top: 1px solid var(--border);
+      padding: .8rem;
+      background: #0a0f22;
+      color: #dbe7ff;
+      font-size: .85rem;
+    }
+
+    .status-ok { color: var(--ok); }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Resilient Voice Recorder</h1>
+    <p>Record long voice notes safely with chunked uploads, retries, private secret links, and one-click sharing.</p>
+
+    <section class="grid">
+      <div class="panel">
+        <span class="label">Recording Controls</span>
+        <div class="controls">
+          <button id="startBtn" class="primary">Start Recording</button>
+          <button id="stopBtn" disabled>Stop & Finalize</button>
+          <button id="resumeBtn">Resume Uploads</button>
+        </div>
+        <div style="margin-top:.7rem;">
+          <label class="label" for="timesliceMs">Chunk length</label>
+          <select id="timesliceMs">
+            <option value="2000">2 seconds</option>
+            <option value="5000" selected>5 seconds</option>
+            <option value="10000">10 seconds</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="panel">
+        <span class="label">Private Recording Link</span>
+        <input id="secretLink" readonly placeholder="Generated automatically when you start" />
+        <div class="controls" style="margin-top:.6rem;">
+          <button id="copyLinkBtn" disabled>Copy Private Link</button>
+          <button id="deleteBtn" class="danger" disabled>Delete Recording</button>
+        </div>
+        <div class="muted" style="margin-top:.5rem;">Anyone with this secret link can access the recording.</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <span class="label">Session Status</span>
+      <div class="stats">
+        <div class="stat"><strong>Status:</strong> <span id="status">idle</span></div>
+        <div class="stat"><strong>Session:</strong> <span id="sessionId">none</span></div>
+        <div class="stat"><strong>Chunks produced:</strong> <span id="chunksProduced">0</span></div>
+        <div class="stat"><strong>Chunks uploaded:</strong> <span id="chunksUploaded">0</span></div>
+      </div>
+      <audio id="player" controls></audio>
+    </section>
+
+    <details>
+      <summary><span class="arrow">▶</span> Debug console</summary>
+      <pre id="log"></pre>
+    </details>
+  </main>
+
+<script>
+const statusEl = document.getElementById('status');
+const sessionIdEl = document.getElementById('sessionId');
+const chunksProducedEl = document.getElementById('chunksProduced');
+const chunksUploadedEl = document.getElementById('chunksUploaded');
+const logEl = document.getElementById('log');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const resumeBtn = document.getElementById('resumeBtn');
+const copyLinkBtn = document.getElementById('copyLinkBtn');
+const deleteBtn = document.getElementById('deleteBtn');
+const player = document.getElementById('player');
+const secretLinkInput = document.getElementById('secretLink');
+
+const DB_NAME = 'voice-recorder';
+const STORE = 'pendingChunks';
+let db;
+let mediaRecorder;
+let stream;
+let sessionId;
+let uploadBase;
+let filePath;
+let deletePath;
+let chunkIdx = 0;
+let chunksUploaded = 0;
+
+function log(msg) {
+  logEl.textContent += `[${new Date().toISOString()}] ${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setStatus(v) {
+  statusEl.textContent = v;
+  statusEl.className = v === 'finalized' ? 'status-ok' : '';
+}
+
+function currentTokenFromPath() {
+  const m = window.location.pathname.match(/^\/r\/([^/]+)\/?$/);
+  return m ? m[1] : null;
+}
+
+function makeAbsolute(path) {
+  return `${window.location.origin}${path}`;
+}
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE)) {
+        db.createObjectStore(STORE, { keyPath: 'key' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function queueChunk(item) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put(item);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function removeChunk(key) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).delete(key);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function listChunks() {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function createSession(mimeType) {
+  const res = await fetch('/api/sessions', {
+    method: 'POST',
+    headers: {'content-type': 'application/json'},
+    body: JSON.stringify({ mime_type: mimeType })
+  });
+  if (!res.ok) throw new Error('create session failed');
+  return await res.json();
+}
+
+function toBase64(arrayBuffer) {
+  let binary = '';
+  const bytes = new Uint8Array(arrayBuffer);
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+async function uploadChunk(item) {
+  const res = await fetch(`${item.uploadBase}/chunks`, {
+    method: 'POST',
+    headers: {'content-type': 'application/json'},
+    body: JSON.stringify({ idx: item.idx, data_b64: item.dataB64 })
+  });
+  if (!res.ok) throw new Error(`upload failed (${res.status})`);
+  await removeChunk(item.key);
+  chunksUploaded++;
+  chunksUploadedEl.textContent = String(chunksUploaded);
+}
+
+async function resumePending() {
+  const items = await listChunks();
+  items.sort((a, b) => a.idx - b.idx);
+  for (const item of items) {
+    try {
+      await uploadChunk(item);
+      log(`uploaded pending chunk ${item.idx} (${item.sessionId})`);
+    } catch (e) {
+      log(`pending chunk failed ${item.idx}: ${e.message}`);
+      break;
+    }
+  }
+}
+
+async function copySecretLink() {
+  if (!secretLinkInput.value) return;
+  await navigator.clipboard.writeText(secretLinkInput.value);
+  log('private link copied to clipboard');
+}
+
+function clearSessionUiAfterDelete() {
+  player.removeAttribute('src');
+  player.load();
+  sessionId = undefined;
+  uploadBase = undefined;
+  filePath = undefined;
+  deletePath = undefined;
+  sessionIdEl.textContent = 'none';
+  chunksProducedEl.textContent = '0';
+  chunksUploadedEl.textContent = '0';
+  setStatus('deleted');
+  stopBtn.disabled = true;
+  startBtn.disabled = false;
+  copyLinkBtn.disabled = true;
+  deleteBtn.disabled = true;
+  secretLinkInput.value = '';
+}
+
+async function deleteRecordingWithDoubleCheck() {
+  if (!deletePath) {
+    log('delete unavailable: no delete path');
+    return;
+  }
+
+  if (!window.confirm('Are you sure you want to delete this recording? This cannot be undone.')) {
+    return;
+  }
+
+  const second = window.prompt('Please type DELETE to confirm permanent deletion.');
+  if (second !== 'DELETE') {
+    log('delete cancelled (confirmation text did not match)');
+    return;
+  }
+
+  const res = await fetch(deletePath, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`delete failed (${res.status})`);
+
+  const token = currentTokenFromPath();
+  if (token) {
+    window.history.replaceState({}, '', '/');
+  }
+
+  clearSessionUiAfterDelete();
+  log('recording deleted');
+}
+
+startBtn.onclick = async () => {
+  db = db || await openDb();
+  await resumePending();
+
+  stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+
+  const session = await createSession(mediaRecorder.mimeType);
+  sessionId = session.session_id;
+  uploadBase = session.upload_base;
+  filePath = session.file_path;
+  deletePath = session.delete_path;
+
+  const privateLink = makeAbsolute(session.secret_path);
+  secretLinkInput.value = privateLink;
+  copyLinkBtn.disabled = false;
+  deleteBtn.disabled = false;
+  window.history.replaceState({}, '', session.secret_path);
+
+  sessionIdEl.textContent = sessionId;
+  chunkIdx = 0;
+  chunksUploaded = 0;
+  chunksProducedEl.textContent = '0';
+  chunksUploadedEl.textContent = '0';
+
+  mediaRecorder.ondataavailable = async (ev) => {
+    if (!ev.data || ev.data.size === 0) return;
+    const buf = await ev.data.arrayBuffer();
+    const dataB64 = toBase64(buf);
+    const item = {
+      key: `${sessionId}:${chunkIdx}`,
+      sessionId,
+      idx: chunkIdx,
+      dataB64,
+      uploadBase,
+      createdAt: Date.now()
+    };
+    await queueChunk(item);
+    chunksProducedEl.textContent = String(chunkIdx + 1);
+    try {
+      await uploadChunk(item);
+      log(`uploaded chunk ${chunkIdx}`);
+    } catch (e) {
+      log(`queued chunk ${chunkIdx} (upload error: ${e.message})`);
+    }
+    chunkIdx++;
+  };
+
+  mediaRecorder.start(Number(document.getElementById('timesliceMs').value));
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  setStatus('recording');
+  log(`recording started session=${sessionId}`);
+  log(`private URL: ${privateLink}`);
+};
+
+stopBtn.onclick = async () => {
+  if (!mediaRecorder) return;
+  mediaRecorder.stop();
+  stream.getTracks().forEach((t) => t.stop());
+
+  setStatus('flushing pending uploads');
+  await resumePending();
+
+  const res = await fetch(`${uploadBase}/finalize`, {
+    method: 'POST',
+    headers: {'content-type': 'application/json'},
+    body: JSON.stringify({ extension: 'webm' })
+  });
+
+  if (res.ok) {
+    const finalizeMsg = await res.text();
+    log(finalizeMsg);
+    player.src = filePath;
+    player.load();
+    setStatus('finalized');
+  } else {
+    log(`finalize failed ${res.status}`);
+    setStatus('stopped with pending');
+  }
+
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+};
+
+resumeBtn.onclick = async () => {
+  db = db || await openDb();
+  await resumePending();
+};
+
+copyLinkBtn.onclick = async () => {
+  try {
+    await copySecretLink();
+  } catch (e) {
+    log(`copy failed: ${e.message}`);
+  }
+};
+
+deleteBtn.onclick = async () => {
+  try {
+    await deleteRecordingWithDoubleCheck();
+  } catch (e) {
+    log(`delete failed: ${e.message}`);
+  }
+};
+
+window.addEventListener('online', async () => {
+  db = db || await openDb();
+  await resumePending();
+});
+
+(function initFromSecretPath() {
+  const token = currentTokenFromPath();
+  if (!token) return;
+  uploadBase = `/api/r/${token}`;
+  filePath = `/r/${token}/file`;
+  deletePath = `/api/r/${token}`;
+  secretLinkInput.value = makeAbsolute(`/r/${token}/`);
+  copyLinkBtn.disabled = false;
+  deleteBtn.disabled = false;
+  player.src = filePath;
+  player.load();
+  log('loaded private secret path');
+})();
+
+(async function init() {
+  db = await openDb();
+  const pending = await listChunks();
+  log(`ready - pending local chunks: ${pending.length}`);
+})();
+</script>
+</body>
+</html>
