@@ -183,6 +183,7 @@
         <input id="secretLink" readonly placeholder="Generated automatically when you start" />
         <div class="controls" style="margin-top:.6rem;">
           <button id="copyLinkBtn" disabled>Copy Private Link</button>
+          <button id="copyAudioLinkBtn" disabled>Copy Audio Link (Telegram/Discord)</button>
           <button id="deleteBtn" class="danger" disabled>Delete Recording</button>
         </div>
         <div class="muted" style="margin-top:.5rem;">Anyone with this secret link can access the recording. Recordings are kept for 7 days, then automatically deleted.</div>
@@ -206,6 +207,7 @@ const logEl = document.getElementById('log');
 const recordBtn = document.getElementById('recordBtn');
 const sendBtn = document.getElementById('sendBtn');
 const copyLinkBtn = document.getElementById('copyLinkBtn');
+const copyAudioLinkBtn = document.getElementById('copyAudioLinkBtn');
 const deleteBtn = document.getElementById('deleteBtn');
 const player = document.getElementById('player');
 const secretLinkInput = document.getElementById('secretLink');
