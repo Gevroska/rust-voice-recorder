@@ -72,6 +72,8 @@ Example for localhost-only publishing + Caddy in another container/project:
 - Compose port mapping: `127.0.0.1:8080:3000` (host:container)
 - Caddy upstream: `http://host.docker.internal:8080` (or your host IP)
 
+Container images are published to GHCR and should include a rolling `:latest` tag from the default branch workflow.
+
 ## API overview
 
 - `POST /api/sessions` -> create recording session and return secret URL details
