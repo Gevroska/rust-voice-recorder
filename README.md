@@ -86,6 +86,18 @@ By default in `docker-compose.yml`, persistent recorder data is stored in a Dock
   - Uploaded chunks (`/data/chunks/...`)
   - Finalized recordings (`/data/final/...`)
 
+### Which volume/path should I mount?
+
+Mount **`/data`** in the container.
+
+- With this repo's Compose file, that is already configured as:
+  - `recorder_data:/data`
+- If you prefer a host bind mount instead of a named volume, use:
+  - `./data:/data`
+- If you run with plain `docker run`, use:
+  - `-v recorder_data:/data` (named volume)
+  - or `-v /absolute/host/path:/data` (bind mount)
+
 This means recordings and DB metadata survive container restarts/redeploys.
 
 ## Audio codec and bitrate
