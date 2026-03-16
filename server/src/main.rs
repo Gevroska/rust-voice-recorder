@@ -1,4 +1,4 @@
-use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{env, net::SocketAddr, panic, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{sqlite::SqlitePoolOptions, FromRow, SqlitePool};
 use tokio::{fs, io::AsyncWriteExt};
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
-use tracing::info;
+use tracing::{error, info};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -71,13 +71,34 @@ struct FinalizeReq {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    init_logging();
+
+    if let Err(err) = run().await {
+        error!(error = %err, "recorder-server fatal error");
+        eprintln!("recorder-server fatal error: {err:#}");
+        return Err(err);
+    }
+
+    Ok(())
+}
+
+fn init_logging() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "recorder_server=info,tower_http=info".into()),
         )
+        .with_writer(std::io::stdout)
+        .with_ansi(false)
         .init();
 
+    panic::set_hook(Box::new(|panic_info| {
+        eprintln!("panic: {panic_info}");
+        eprintln!("backtrace (enable with RUST_BACKTRACE=1)");
+    }));
+}
+
+async fn run() -> Result<()> {
     let data_dir = PathBuf::from(env::var("APP_DATA_DIR").unwrap_or_else(|_| "./data".to_string()));
     let db_path = env::var("APP_DB_PATH").unwrap_or_else(|_| "./data/app.db".to_string());
     let max_chunk_bytes = env::var("APP_MAX_CHUNK_BYTES")
@@ -85,6 +106,14 @@ async fn main() -> Result<()> {
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(10 * 1024 * 1024);
     let web_dir = PathBuf::from(env::var("APP_WEB_DIR").unwrap_or_else(|_| "./web".to_string()));
+
+    info!(
+        data_dir = %data_dir.display(),
+        db_path = %db_path,
+        max_chunk_bytes,
+        web_dir = %web_dir.display(),
+        "starting recorder-server"
+    );
 
     fs::create_dir_all(&data_dir)
         .await
@@ -133,7 +162,9 @@ async fn main() -> Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     info!("recorder-server listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .await
+        .context("axum server terminated unexpectedly")?;
     Ok(())
 }
 

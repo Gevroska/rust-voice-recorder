@@ -74,6 +74,17 @@ Example for localhost-only publishing + Caddy in another container/project:
 
 Container images are published to GHCR and should include a rolling `:latest` tag from the default branch workflow.
 
+## Runtime logging
+
+The server now emits startup and fatal errors explicitly to container logs (stdout/stderr), including panic hook output.
+
+Recommended env for richer diagnostics:
+
+```bash
+RUST_LOG=info
+RUST_BACKTRACE=1
+```
+
 ## API overview
 
 - `POST /api/sessions` -> create recording session and return secret URL details
