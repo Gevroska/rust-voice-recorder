@@ -88,7 +88,7 @@
     }
 
     .status-recording { background: #1f6b3a; border-color: #2e9c56; color: #d8ffe6; }
-    .status-paused { background: #27417b; border-color: #3f66b8; color: #dce8ff; }
+    .status-paused { background: #6b4d1f; border-color: #aa7a2f; color: #ffefcf; }
     .status-offline { background: #6b4d1f; border-color: #aa7a2f; color: #ffefcf; }
     .status-sent { background: #244d63; border-color: #3b7e9f; color: #d7f3ff; }
 
@@ -186,7 +186,7 @@
           <button id="copyAudioLinkBtn" disabled>Copy Audio Link (Telegram/Discord)</button>
           <button id="deleteBtn" class="danger" disabled>Delete Recording</button>
         </div>
-        <div class="muted" style="margin-top:.5rem;">Anyone with this secret link can access the recording. Recordings are kept for 7 days, then automatically deleted. Use the Audio Link to paste in Telegram/Discord for direct playback.</div>
+        <div class="muted" style="margin-top:.5rem;">Anyone with this secret link can access the recording. Recordings are kept for 7 days, then automatically deleted.</div>
       </div>
     </section>
 
@@ -251,7 +251,7 @@ function updatePlayerVisibility(show){
 function updateControls(){
   if (isRecording) {
     recordBtn.textContent = 'Pause Recording';
-    recordBtn.className = 'success big-btn';
+    recordBtn.className = 'primary big-btn';
     sendBtn.disabled = false;
   } else if (isPaused || (hasActiveSession() && !mediaRecorder)) {
     recordBtn.textContent = 'Resume Recording';
@@ -274,7 +274,6 @@ function updateControls(){
   }
 
   copyLinkBtn.disabled = !secretLinkInput.value;
-  copyAudioLinkBtn.disabled = !filePath;
   deleteBtn.disabled = !deletePath;
 }
 
@@ -422,13 +421,6 @@ async function copySecretLink(){
   updateControls();
 }
 
-async function copyAudioLink(){
-  if (!filePath) return;
-  const url = makeAbsolute(filePath);
-  await navigator.clipboard.writeText(url);
-  log('audio link copied (Telegram/Discord compatible direct file URL)');
-}
-
 async function deleteRecordingWithDoubleCheck(){
   if(!deletePath) return;
   if(!window.confirm('Delete this recording permanently?')) return;
@@ -449,7 +441,6 @@ async function deleteRecordingWithDoubleCheck(){
 recordBtn.onclick = async () => { try { await startOrToggleRecording(); } catch (e) { log(`record action failed: ${e.message}`); } };
 sendBtn.onclick = async () => { await stopAndSend(); };
 copyLinkBtn.onclick = async () => { try { await copySecretLink(); } catch (e) { log(`copy failed: ${e.message}`);} };
-copyAudioLinkBtn.onclick = async () => { try { await copyAudioLink(); } catch (e) { log(`copy audio link failed: ${e.message}`);} };
 deleteBtn.onclick = async () => { try { await deleteRecordingWithDoubleCheck(); } catch (e) { log(`delete failed: ${e.message}`);} };
 window.addEventListener('online', async () => { db = db || await openDb(); await resumePending(); if (isRecording) updateBanner('Recording in progress (upload OK)', 'status-recording'); });
 window.addEventListener('offline', () => { if (hasActiveSession()) updateBanner('Connection unstable: uploads queued', 'status-offline'); });

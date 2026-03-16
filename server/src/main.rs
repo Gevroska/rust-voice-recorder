@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Context, Result};
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -693,12 +693,39 @@ async fn cleanup_expired_sessions(state: Arc<AppState>) -> Result<()> {
 }
 
 async fn secret_recorder_page(
-    Path(_token): Path<String>,
+    Path(token): Path<String>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<Html<String>, (StatusCode, String)> {
-    let page = fs::read_to_string(state.web_dir.join("index.html"))
+    let mut page = fs::read_to_string(state.web_dir.join("index.html"))
         .await
         .map_err(internal_err)?;
+
+    let host = headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get("host"))
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost:3000");
+    let proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("http");
+
+    let secret_url = format!("{proto}://{host}/r/{token}/");
+    let audio_url = format!("{proto}://{host}/r/{token}/file");
+    let preview_meta = format!(
+        r#"
+    <meta property="og:type" content="music.song">
+    <meta property="og:title" content="Voice recording">
+    <meta property="og:description" content="Private voice recording">
+    <meta property="og:url" content="{secret_url}">
+    <meta property="og:audio" content="{audio_url}">
+    <meta name="twitter:card" content="summary">
+"#
+    );
+
+    page = page.replacen("</head>", &format!("{preview_meta}</head>"), 1);
+
     Ok(Html(page))
 }
 
