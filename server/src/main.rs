@@ -25,7 +25,6 @@ use sqlx::{
 use tokio::{
     fs,
     io::AsyncWriteExt,
-    process::Command,
     time::{self, Duration},
 };
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
@@ -461,8 +460,12 @@ async fn finalize_by_session_id(
         return Err((StatusCode::BAD_REQUEST, "no chunks uploaded".to_string()));
     }
 
-    let chunk_paths: Vec<String> = chunks.into_iter().map(|(_, file_path)| file_path).collect();
-    assemble_chunks_to_output(&id, &state.data_dir, &chunk_paths, &out_path).await?;
+    let mut out = fs::File::create(&out_path).await.map_err(internal_err)?;
+    for (_, file_path) in chunks {
+        let b = fs::read(file_path).await.map_err(internal_err)?;
+        out.write_all(&b).await.map_err(internal_err)?;
+    }
+    out.flush().await.map_err(internal_err)?;
 
     sqlx::query(
         "UPDATE sessions SET status = 'finalized', completed_at = datetime('now'), output_path = ? WHERE id = ?",
@@ -475,65 +478,6 @@ async fn finalize_by_session_id(
 
     let secret_token = find_secret_token_by_session_id(&state.db, &id).await?;
     Ok((StatusCode::OK, format!("finalized: /r/{secret_token}/file")))
-}
-
-async fn assemble_chunks_to_output(
-    session_id: &str,
-    data_dir: &StdPath,
-    chunk_paths: &[String],
-    out_path: &StdPath,
-) -> Result<(), (StatusCode, String)> {
-    let list_path = data_dir
-        .join("final")
-        .join(format!("{session_id}.concat.txt"));
-
-    let mut list_data = String::new();
-    for chunk_path in chunk_paths {
-        let escaped = chunk_path.replace('\'', "'\\''");
-        list_data.push_str(&format!("file '{}'\n", escaped));
-    }
-
-    fs::write(&list_path, list_data)
-        .await
-        .map_err(internal_err)?;
-
-    let ffmpeg_status = Command::new("ffmpeg")
-        .arg("-hide_banner")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-f")
-        .arg("concat")
-        .arg("-safe")
-        .arg("0")
-        .arg("-i")
-        .arg(&list_path)
-        .arg("-c")
-        .arg("copy")
-        .arg("-y")
-        .arg(out_path)
-        .status()
-        .await;
-
-    let _ = fs::remove_file(&list_path).await;
-
-    match ffmpeg_status {
-        Ok(status) if status.success() => return Ok(()),
-        Ok(status) => {
-            warn!(session_id = %session_id, code = ?status.code(), "ffmpeg concat failed, falling back to byte concat");
-        }
-        Err(err) => {
-            warn!(session_id = %session_id, error = %err, "ffmpeg unavailable, falling back to byte concat");
-        }
-    }
-
-    let mut out = fs::File::create(out_path).await.map_err(internal_err)?;
-    for file_path in chunk_paths {
-        let b = fs::read(file_path).await.map_err(internal_err)?;
-        out.write_all(&b).await.map_err(internal_err)?;
-    }
-    out.flush().await.map_err(internal_err)?;
-
-    Ok(())
 }
 
 async fn download_file_legacy(
