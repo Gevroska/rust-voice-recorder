@@ -712,14 +712,12 @@ async fn secret_recorder_page(
         .unwrap_or("http");
 
     let secret_url = format!("{proto}://{host}/r/{token}/");
-    let audio_url = format!("{proto}://{host}/r/{token}/file");
     let preview_meta = format!(
         r#"
     <meta property="og:type" content="music.song">
     <meta property="og:title" content="Voice recording">
     <meta property="og:description" content="Private voice recording">
     <meta property="og:url" content="{secret_url}">
-    <meta property="og:audio" content="{audio_url}">
     <meta name="twitter:card" content="summary">
 "#
     );
