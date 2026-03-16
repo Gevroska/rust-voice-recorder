@@ -72,7 +72,25 @@
     button:disabled { opacity: .45; cursor: not-allowed; }
 
     .primary { background: #27417b; }
-    .danger { background: #5f2432; border-color: #8a3348; }
+    .danger { background: #7a2230; border-color: #a73b4f; }
+    .success { background: #1f6b3a; border-color: #2e9c56; }
+
+    .big-btn { font-size: 1.02rem; padding: .82rem 1.05rem; }
+
+    .status-banner {
+      margin-top: .8rem;
+      border-radius: 12px;
+      padding: .8rem;
+      border: 1px solid var(--border);
+      background: #0f1630;
+      font-weight: 700;
+      text-align: center;
+    }
+
+    .status-recording { background: #1f6b3a; border-color: #2e9c56; color: #d8ffe6; }
+    .status-paused { background: #27417b; border-color: #3f66b8; color: #dce8ff; }
+    .status-offline { background: #6b4d1f; border-color: #aa7a2f; color: #ffefcf; }
+    .status-sent { background: #244d63; border-color: #3b7e9f; color: #d7f3ff; }
 
     .label { font-size: .82rem; color: var(--muted); display: block; margin-bottom: .35rem; }
 
@@ -146,10 +164,10 @@
       <div class="panel">
         <span class="label">Recording Controls</span>
         <div class="controls">
-          <button id="startBtn" class="primary">Start Recording</button>
-          <button id="stopBtn" disabled>Stop & Finalize</button>
-          <button id="resumeBtn">Resume Uploads</button>
+          <button id="recordBtn" class="primary big-btn">Start Recording</button>
+          <button id="sendBtn" class="danger big-btn" disabled>Stop & Send</button>
         </div>
+        <div id="recordingState" class="status-banner">Ready to record</div>
         <div style="margin-top:.7rem;">
           <label class="label" for="timesliceMs">Chunk length</label>
           <select id="timesliceMs">
@@ -165,21 +183,17 @@
         <input id="secretLink" readonly placeholder="Generated automatically when you start" />
         <div class="controls" style="margin-top:.6rem;">
           <button id="copyLinkBtn" disabled>Copy Private Link</button>
+          <button id="copyAudioLinkBtn" disabled>Copy Audio Link (Telegram/Discord)</button>
           <button id="deleteBtn" class="danger" disabled>Delete Recording</button>
         </div>
-        <div class="muted" style="margin-top:.5rem;">Anyone with this secret link can access the recording.</div>
+        <div class="muted" style="margin-top:.5rem;">Anyone with this secret link can access the recording. Recordings are kept for 7 days, then automatically deleted. Use the Audio Link to paste in Telegram/Discord for direct playback.</div>
       </div>
     </section>
 
     <section class="panel">
-      <span class="label">Session Status</span>
-      <div class="stats">
-        <div class="stat"><strong>Status:</strong> <span id="status">idle</span></div>
-        <div class="stat"><strong>Session:</strong> <span id="sessionId">none</span></div>
-        <div class="stat"><strong>Chunks produced:</strong> <span id="chunksProduced">0</span></div>
-        <div class="stat"><strong>Chunks uploaded:</strong> <span id="chunksUploaded">0</span></div>
-      </div>
-      <audio id="player" controls></audio>
+      <span class="label">Recording Status</span>
+      <div class="muted" id="simpleStatusText">No recording yet.</div>
+      <audio id="player" controls hidden></audio>
     </section>
 
     <details>
@@ -189,18 +203,17 @@
   </main>
 
 <script>
-const statusEl = document.getElementById('status');
-const sessionIdEl = document.getElementById('sessionId');
-const chunksProducedEl = document.getElementById('chunksProduced');
-const chunksUploadedEl = document.getElementById('chunksUploaded');
 const logEl = document.getElementById('log');
-const startBtn = document.getElementById('startBtn');
-const stopBtn = document.getElementById('stopBtn');
-const resumeBtn = document.getElementById('resumeBtn');
+const recordBtn = document.getElementById('recordBtn');
+const sendBtn = document.getElementById('sendBtn');
 const copyLinkBtn = document.getElementById('copyLinkBtn');
+const copyAudioLinkBtn = document.getElementById('copyAudioLinkBtn');
 const deleteBtn = document.getElementById('deleteBtn');
 const player = document.getElementById('player');
 const secretLinkInput = document.getElementById('secretLink');
+const recordingStateEl = document.getElementById('recordingState');
+const simpleStatusText = document.getElementById('simpleStatusText');
+const timesliceMs = document.getElementById('timesliceMs');
 
 const DB_NAME = 'voice-recorder';
 const STORE = 'pendingChunks';
@@ -212,298 +225,269 @@ let uploadBase;
 let filePath;
 let deletePath;
 let chunkIdx = 0;
-let chunksUploaded = 0;
+let isRecording = false;
+let isPaused = false;
+let isFinalized = false;
+let hasCopiedLink = false;
 
-function log(msg) {
-  logEl.textContent += `[${new Date().toISOString()}] ${msg}\n`;
-  logEl.scrollTop = logEl.scrollHeight;
+function log(msg){ logEl.textContent += `[${new Date().toISOString()}] ${msg}
+`; logEl.scrollTop = logEl.scrollHeight; }
+function currentTokenFromPath(){ const m = window.location.pathname.match(/^\/r\/([^/]+)\/?$/); return m ? m[1] : null; }
+function makeAbsolute(path){ return `${window.location.origin}${path}`; }
+function hasActiveSession(){ return !!uploadBase && !isFinalized; }
+function shouldWarnBeforeUnload(){ return isRecording || isPaused || hasActiveSession() || (!!sessionId && !hasCopiedLink); }
+
+function updateBanner(text, cls=''){
+  recordingStateEl.className = `status-banner ${cls}`.trim();
+  recordingStateEl.textContent = text;
+  simpleStatusText.textContent = text;
 }
 
-function setStatus(v) {
-  statusEl.textContent = v;
-  statusEl.className = v === 'finalized' ? 'status-ok' : '';
+function updatePlayerVisibility(show){
+  if (show) player.hidden = false;
+  else { player.hidden = true; player.removeAttribute('src'); player.load(); }
 }
 
-function currentTokenFromPath() {
-  const m = window.location.pathname.match(/^\/r\/([^/]+)\/?$/);
-  return m ? m[1] : null;
+function updateControls(){
+  if (isRecording) {
+    recordBtn.textContent = 'Pause Recording';
+    recordBtn.className = 'success big-btn';
+    sendBtn.disabled = false;
+  } else if (isPaused || (hasActiveSession() && !mediaRecorder)) {
+    recordBtn.textContent = 'Resume Recording';
+    recordBtn.className = 'primary big-btn';
+    sendBtn.disabled = false;
+  } else if (!hasActiveSession()) {
+    recordBtn.textContent = 'Start Recording';
+    recordBtn.className = 'primary big-btn';
+    sendBtn.disabled = true;
+  } else {
+    recordBtn.textContent = 'Resume Recording';
+    recordBtn.className = 'primary big-btn';
+    sendBtn.disabled = false;
+  }
+
+  if ((sessionId && !hasCopiedLink) && !isRecording) {
+    recordBtn.disabled = false;
+  } else {
+    recordBtn.disabled = false;
+  }
+
+  copyLinkBtn.disabled = !secretLinkInput.value;
+  copyAudioLinkBtn.disabled = !filePath;
+  deleteBtn.disabled = !deletePath;
 }
 
-function makeAbsolute(path) {
-  return `${window.location.origin}${path}`;
-}
-
-function openDb() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) {
-        db.createObjectStore(STORE, { keyPath: 'key' });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+function openDb(){
+  return new Promise((resolve,reject)=>{
+    const req = indexedDB.open(DB_NAME,1);
+    req.onupgradeneeded=()=>{ const db=req.result; if(!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE,{keyPath:'key'}); };
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error);
   });
 }
+function queueChunk(item){ return new Promise((resolve,reject)=>{ const tx=db.transaction(STORE,'readwrite'); tx.objectStore(STORE).put(item); tx.oncomplete=resolve; tx.onerror=()=>reject(tx.error); }); }
+function removeChunk(key){ return new Promise((resolve,reject)=>{ const tx=db.transaction(STORE,'readwrite'); tx.objectStore(STORE).delete(key); tx.oncomplete=resolve; tx.onerror=()=>reject(tx.error); }); }
+function listChunks(){ return new Promise((resolve,reject)=>{ const tx=db.transaction(STORE,'readonly'); const req=tx.objectStore(STORE).getAll(); req.onsuccess=()=>resolve(req.result); req.onerror=()=>reject(req.error); }); }
 
-function queueChunk(item) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).put(item);
-    tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-function removeChunk(key) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).delete(key);
-    tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-function listChunks() {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readonly');
-    const req = tx.objectStore(STORE).getAll();
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function createSession(mimeType) {
-  const res = await fetch('/api/sessions', {
-    method: 'POST',
-    headers: {'content-type': 'application/json'},
-    body: JSON.stringify({ mime_type: mimeType })
-  });
-  if (!res.ok) throw new Error('create session failed');
+async function createSession(mimeType){
+  const res = await fetch('/api/sessions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mime_type:mimeType})});
+  if(!res.ok) throw new Error('create session failed');
   return await res.json();
 }
-
-function toBase64(arrayBuffer) {
-  let binary = '';
-  const bytes = new Uint8Array(arrayBuffer);
-  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
+async function loadSessionStatusByToken(token){
+  const res = await fetch(`/api/r/${token}`);
+  if(!res.ok) throw new Error(`status fetch failed (${res.status})`);
+  return await res.json();
 }
+function toBase64(arrayBuffer){ let binary=''; const bytes=new Uint8Array(arrayBuffer); for(let i=0;i<bytes.byteLength;i++) binary += String.fromCharCode(bytes[i]); return btoa(binary); }
 
-async function uploadChunk(item) {
-  const res = await fetch(`${item.uploadBase}/chunks`, {
-    method: 'POST',
-    headers: {'content-type': 'application/json'},
-    body: JSON.stringify({ idx: item.idx, data_b64: item.dataB64 })
-  });
-  if (!res.ok) throw new Error(`upload failed (${res.status})`);
+async function uploadChunk(item){
+  const res = await fetch(`${item.uploadBase}/chunks`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({idx:item.idx,data_b64:item.dataB64})});
+  if(!res.ok) throw new Error(`upload failed (${res.status})`);
   await removeChunk(item.key);
-  chunksUploaded++;
-  chunksUploadedEl.textContent = String(chunksUploaded);
 }
 
-async function resumePending() {
+async function resumePending(){
   const items = await listChunks();
-  items.sort((a, b) => a.idx - b.idx);
-  for (const item of items) {
-    try {
-      await uploadChunk(item);
-      log(`uploaded pending chunk ${item.idx} (${item.sessionId})`);
-    } catch (e) {
-      log(`pending chunk failed ${item.idx}: ${e.message}`);
-      break;
-    }
+  const currentItems = uploadBase ? items.filter((x)=>x.uploadBase===uploadBase) : items;
+  currentItems.sort((a,b)=>a.idx-b.idx);
+  for (const item of currentItems) {
+    try { await uploadChunk(item); }
+    catch (e) { updateBanner('Connection unstable: uploads queued', 'status-offline'); log(`pending chunk failed ${item.idx}: ${e.message}`); break; }
   }
 }
 
-async function copySecretLink() {
-  if (!secretLinkInput.value) return;
-  await navigator.clipboard.writeText(secretLinkInput.value);
-  log('private link copied to clipboard');
-}
-
-function clearSessionUiAfterDelete() {
-  player.removeAttribute('src');
-  player.load();
-  sessionId = undefined;
-  uploadBase = undefined;
-  filePath = undefined;
-  deletePath = undefined;
-  sessionIdEl.textContent = 'none';
-  chunksProducedEl.textContent = '0';
-  chunksUploadedEl.textContent = '0';
-  setStatus('deleted');
-  stopBtn.disabled = true;
-  startBtn.disabled = false;
-  copyLinkBtn.disabled = true;
-  deleteBtn.disabled = true;
-  secretLinkInput.value = '';
-}
-
-async function deleteRecordingWithDoubleCheck() {
-  if (!deletePath) {
-    log('delete unavailable: no delete path');
-    return;
-  }
-
-  if (!window.confirm('Are you sure you want to delete this recording? This cannot be undone.')) {
-    return;
-  }
-
-  const second = window.prompt('Please type DELETE to confirm permanent deletion.');
-  if (second !== 'DELETE') {
-    log('delete cancelled (confirmation text did not match)');
-    return;
-  }
-
-  const res = await fetch(deletePath, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`delete failed (${res.status})`);
-
-  const token = currentTokenFromPath();
-  if (token) {
-    window.history.replaceState({}, '', '/');
-  }
-
-  clearSessionUiAfterDelete();
-  log('recording deleted');
-}
-
-startBtn.onclick = async () => {
-  db = db || await openDb();
-  await resumePending();
-
-  stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  const preferredMimeType = 'audio/webm;codecs=opus';
-  const recorderOptions = {
-    mimeType: preferredMimeType,
-    audioBitsPerSecond: 128000
-  };
-  mediaRecorder = new MediaRecorder(stream, recorderOptions);
-
-  const session = await createSession(mediaRecorder.mimeType || preferredMimeType);
-  sessionId = session.session_id;
-  uploadBase = session.upload_base;
-  filePath = session.file_path;
-  deletePath = session.delete_path;
-
-  const privateLink = makeAbsolute(session.secret_path);
-  secretLinkInput.value = privateLink;
-  copyLinkBtn.disabled = false;
-  deleteBtn.disabled = false;
-  window.history.replaceState({}, '', session.secret_path);
-
-  sessionIdEl.textContent = sessionId;
-  chunkIdx = 0;
-  chunksUploaded = 0;
-  chunksProducedEl.textContent = '0';
-  chunksUploadedEl.textContent = '0';
-
+function bindRecorderEvents(){
   mediaRecorder.ondataavailable = async (ev) => {
     if (!ev.data || ev.data.size === 0) return;
+    const currentIdx = chunkIdx;
     const buf = await ev.data.arrayBuffer();
-    const dataB64 = toBase64(buf);
-    const item = {
-      key: `${sessionId}:${chunkIdx}`,
-      sessionId,
-      idx: chunkIdx,
-      dataB64,
-      uploadBase,
-      createdAt: Date.now()
-    };
+    const item = { key: `${sessionId}:${currentIdx}`, sessionId, idx: currentIdx, dataB64: toBase64(buf), uploadBase, createdAt: Date.now() };
     await queueChunk(item);
-    chunksProducedEl.textContent = String(chunkIdx + 1);
+    chunkIdx++;
     try {
       await uploadChunk(item);
-      log(`uploaded chunk ${chunkIdx}`);
+      if (navigator.onLine) updateBanner(isRecording ? 'Recording in progress (upload OK)' : 'Recording paused', isRecording ? 'status-recording' : 'status-paused');
     } catch (e) {
-      log(`queued chunk ${chunkIdx} (upload error: ${e.message})`);
+      updateBanner('Connection unstable: uploads queued', 'status-offline');
+      log(`queued chunk ${currentIdx} (upload error: ${e.message})`);
     }
-    chunkIdx++;
   };
+}
 
-  mediaRecorder.start(Number(document.getElementById('timesliceMs').value));
-  startBtn.disabled = true;
-  stopBtn.disabled = false;
-  setStatus('recording');
-  log(`recording started session=${sessionId}`);
-  log(`recorder mime=${mediaRecorder.mimeType || preferredMimeType} target_bitrate=128000bps`);
-  log(`private URL: ${privateLink}`);
-};
+async function ensureRecorderForActiveSession(){
+  stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const preferredMimeType = 'audio/webm;codecs=opus';
+  mediaRecorder = new MediaRecorder(stream, { mimeType: preferredMimeType, audioBitsPerSecond: 128000 });
+  bindRecorderEvents();
+  mediaRecorder.start(Number(timesliceMs.value));
+  isRecording = true;
+  isPaused = false;
+  updateBanner('Recording in progress (upload OK)', 'status-recording');
+  updateControls();
+}
 
-stopBtn.onclick = async () => {
-  if (!mediaRecorder) return;
-  mediaRecorder.stop();
-  stream.getTracks().forEach((t) => t.stop());
-
-  setStatus('flushing pending uploads');
-  await resumePending();
-
-  const res = await fetch(`${uploadBase}/finalize`, {
-    method: 'POST',
-    headers: {'content-type': 'application/json'},
-    body: JSON.stringify({ extension: 'webm' })
-  });
-
-  if (res.ok) {
-    const finalizeMsg = await res.text();
-    log(finalizeMsg);
-    player.src = filePath;
-    player.load();
-    setStatus('finalized');
-  } else {
-    log(`finalize failed ${res.status}`);
-    setStatus('stopped with pending');
-  }
-
-  startBtn.disabled = false;
-  stopBtn.disabled = true;
-};
-
-resumeBtn.onclick = async () => {
+async function startOrToggleRecording(){
   db = db || await openDb();
   await resumePending();
-};
 
-copyLinkBtn.onclick = async () => {
-  try {
-    await copySecretLink();
-  } catch (e) {
-    log(`copy failed: ${e.message}`);
+  if (!uploadBase) {
+    const preferredMimeType = 'audio/webm;codecs=opus';
+    const session = await createSession(preferredMimeType);
+    sessionId = session.session_id;
+    uploadBase = session.upload_base;
+    filePath = session.file_path;
+    deletePath = session.delete_path;
+    chunkIdx = 0;
+    isFinalized = false;
+    hasCopiedLink = false;
+    secretLinkInput.value = makeAbsolute(session.secret_path);
+    window.history.replaceState({}, '', session.secret_path);
+    log(`private URL: ${secretLinkInput.value}`);
+  } else if (sessionId && !hasCopiedLink && !isRecording && !isPaused) {
+    const proceed = window.confirm('Please copy and save the private link before continuing. Continue anyway?');
+    if (!proceed) return;
   }
-};
 
-deleteBtn.onclick = async () => {
-  try {
-    await deleteRecordingWithDoubleCheck();
-  } catch (e) {
-    log(`delete failed: ${e.message}`);
+  if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.pause();
+    isRecording = false;
+    isPaused = true;
+    updateBanner('Recording paused', 'status-paused');
+    updateControls();
+    return;
   }
-};
 
-window.addEventListener('online', async () => {
-  db = db || await openDb();
-  await resumePending();
-});
+  if (isPaused && mediaRecorder && mediaRecorder.state === 'paused') {
+    mediaRecorder.resume();
+    isRecording = true;
+    isPaused = false;
+    updateBanner('Recording in progress (upload OK)', 'status-recording');
+    updateControls();
+    return;
+  }
 
-(function initFromSecretPath() {
+  await ensureRecorderForActiveSession();
+}
+
+async function stopAndSend(){
+  if (!uploadBase) return;
+  try {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    isRecording = false;
+    isPaused = false;
+    await resumePending();
+    const res = await fetch(`${uploadBase}/finalize`, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({extension:'webm'}) });
+    if (!res.ok) throw new Error(`finalize failed (${res.status})`);
+    isFinalized = true;
+    updateBanner('Sent ✅', 'status-sent');
+    if (filePath) { player.src = filePath; player.load(); updatePlayerVisibility(true); }
+    log(await res.text());
+    mediaRecorder = undefined;
+    stream = undefined;
+  } catch (e) {
+    updateBanner('Could not send now (saved for retry)', 'status-offline');
+    log(e.message || String(e));
+  }
+  updateControls();
+}
+
+async function copySecretLink(){
+  if(!secretLinkInput.value) return;
+  await navigator.clipboard.writeText(secretLinkInput.value);
+  hasCopiedLink = true;
+  log('private link copied to clipboard');
+  updateControls();
+}
+
+async function copyAudioLink(){
+  if (!filePath) return;
+  const url = makeAbsolute(filePath);
+  await navigator.clipboard.writeText(url);
+  log('audio link copied (Telegram/Discord compatible direct file URL)');
+}
+
+async function deleteRecordingWithDoubleCheck(){
+  if(!deletePath) return;
+  if(!window.confirm('Delete this recording permanently?')) return;
+  const second = window.prompt('Type DELETE to confirm.');
+  if(second !== 'DELETE') return;
+  const res = await fetch(deletePath, {method:'DELETE'});
+  if(!res.ok) throw new Error(`delete failed (${res.status})`);
+  if (currentTokenFromPath()) window.history.replaceState({}, '', '/');
+  sessionId = undefined; uploadBase = undefined; filePath = undefined; deletePath = undefined;
+  chunkIdx = 0; isRecording = false; isPaused = false; isFinalized = false; hasCopiedLink = false;
+  mediaRecorder = undefined; stream = undefined;
+  secretLinkInput.value = '';
+  updatePlayerVisibility(false);
+  updateBanner('Ready to record');
+  updateControls();
+}
+
+recordBtn.onclick = async () => { try { await startOrToggleRecording(); } catch (e) { log(`record action failed: ${e.message}`); } };
+sendBtn.onclick = async () => { await stopAndSend(); };
+copyLinkBtn.onclick = async () => { try { await copySecretLink(); } catch (e) { log(`copy failed: ${e.message}`);} };
+copyAudioLinkBtn.onclick = async () => { try { await copyAudioLink(); } catch (e) { log(`copy audio link failed: ${e.message}`);} };
+deleteBtn.onclick = async () => { try { await deleteRecordingWithDoubleCheck(); } catch (e) { log(`delete failed: ${e.message}`);} };
+window.addEventListener('online', async () => { db = db || await openDb(); await resumePending(); if (isRecording) updateBanner('Recording in progress (upload OK)', 'status-recording'); });
+window.addEventListener('offline', () => { if (hasActiveSession()) updateBanner('Connection unstable: uploads queued', 'status-offline'); });
+window.addEventListener('beforeunload', (event) => { if (!shouldWarnBeforeUnload()) return; event.preventDefault(); event.returnValue = ''; });
+
+(async function initFromSecretPath(){
   const token = currentTokenFromPath();
-  if (!token) return;
+  if (!token) { updateBanner('Ready to record'); updateControls(); return; }
   uploadBase = `/api/r/${token}`;
   filePath = `/r/${token}/file`;
   deletePath = `/api/r/${token}`;
   secretLinkInput.value = makeAbsolute(`/r/${token}/`);
-  copyLinkBtn.disabled = false;
-  deleteBtn.disabled = false;
-  player.src = filePath;
-  player.load();
-  log('loaded private secret path');
+  try {
+    const status = await loadSessionStatusByToken(token);
+    sessionId = status.session_id;
+    chunkIdx = status.next_chunk_idx;
+    isFinalized = status.status === 'finalized';
+    if (isFinalized && status.has_output) {
+      updateBanner('Sent ✅', 'status-sent');
+      player.src = filePath;
+      player.load();
+      updatePlayerVisibility(true);
+    } else {
+      updateBanner(status.chunk_count > 0 ? 'Recording found. You can resume recording or send now.' : 'Ready to record');
+      updatePlayerVisibility(false);
+    }
+  } catch (e) {
+    log(`failed to load secret status: ${e.message}`);
+    updateBanner('Ready to record');
+  }
+  updateControls();
 })();
 
-(async function init() {
+(async function init(){
   db = await openDb();
   const pending = await listChunks();
   log(`ready - pending local chunks: ${pending.length}`);
+  updateControls();
 })();
 </script>
 </body>
