@@ -186,8 +186,7 @@ async fn run() -> Result<()> {
         .route("/r/{token}/file", get(download_file_by_token))
         .route("/r/{token}", get(secret_recorder_page))
         .route("/r/{token}/", get(secret_recorder_page))
-        .nest_service(
-            "/",
+        .fallback_service(
             ServeDir::new(state.web_dir.clone()).append_index_html_on_directories(true),
         )
         .layer(CorsLayer::permissive())
