@@ -1,5 +1,6 @@
 services:
   recorder-server:
+    image: rust-voice-recorder:latest
     build:
       context: ./server
     container_name: recorder-server
