@@ -3,6 +3,7 @@ use std::{
     net::SocketAddr,
     panic,
     path::{Path as StdPath, PathBuf},
+    str::FromStr,
     sync::Arc,
 };
 
@@ -17,7 +18,10 @@ use axum::{
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{sqlite::SqlitePoolOptions, FromRow, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    FromRow, SqlitePool,
+};
 use tokio::{fs, io::AsyncWriteExt};
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 use tracing::{error, info};
@@ -148,9 +152,12 @@ async fn run() -> Result<()> {
     }
 
     let db_url = sqlite_url_from_path(&db_path);
+    let db_connect_options = SqliteConnectOptions::from_str(&db_url)
+        .with_context(|| format!("parsing sqlite url {db_url}"))?
+        .create_if_missing(true);
     let db = SqlitePoolOptions::new()
         .max_connections(5)
-        .connect(&db_url)
+        .connect_with(db_connect_options)
         .await
         .with_context(|| format!("connecting sqlite {db_url}"))?;
 
