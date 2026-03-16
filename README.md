@@ -71,8 +71,31 @@ Example for localhost-only publishing + Caddy in another container/project:
 
 - Compose port mapping: `127.0.0.1:8080:3000` (host:container)
 - Caddy upstream: `http://host.docker.internal:8080` (or your host IP)
+- Persistent data volume: `recorder_data` mounted to `/data`
 
 Container images are published to GHCR and should include a rolling `:latest` tag from the default branch workflow.
+
+## Storage persistence
+
+By default in `docker-compose.yml`, persistent recorder data is stored in a Docker named volume:
+
+- Volume: `recorder_data`
+- Mounted path in container: `/data`
+- Contains:
+  - SQLite DB (`/data/app.db`)
+  - Uploaded chunks (`/data/chunks/...`)
+  - Finalized recordings (`/data/final/...`)
+
+This means recordings and DB metadata survive container restarts/redeploys.
+
+## Audio codec and bitrate
+
+The browser recorder requests:
+
+- Codec/container: `audio/webm;codecs=opus`
+- Target bitrate: `128000` bps (128 kbps)
+
+Note: browser support can vary. The app logs the actual `mediaRecorder.mimeType` at start so you can verify what your browser accepted.
 
 ## Runtime logging
 
